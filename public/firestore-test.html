@@ -1,0 +1,270 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Firestore connection test</title>
+<style>
+    body {
+        font-family: -apple-system, Arial, sans-serif;
+        max-width: 640px;
+        margin: 60px auto;
+        padding: 0 20px;
+        color: #1a1a1a;
+        line-height: 1.5;
+    }
+    h1 { font-size: 22px; }
+    .step {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+    button {
+        padding: 10px 18px;
+        font-size: 14px;
+        border-radius: 6px;
+        border: none;
+        background: #1a1a1a;
+        color: white;
+        cursor: pointer;
+    }
+    button:disabled {
+        background: #999;
+        cursor: not-allowed;
+    }
+    #status {
+        margin-top: 14px;
+        padding: 12px;
+        border-radius: 6px;
+        font-size: 14px;
+        white-space: pre-wrap;
+    }
+    .ok { background: #e6f4ea; color: #1e7b34; }
+    .err { background: #fde8e8; color: #b42318; }
+    .pending { background: #fff8e1; color: #8a6d00; }
+    code {
+        background: #f1f1f1;
+        padding: 2px 5px;
+        border-radius: 4px;
+    }
+</style>
+</head>
+<body>
+
+<h1>Firestore connection test</h1>
+<p>This page tests whether a browser can write to, and read from, Firestore directly — no PHP, no Opalstack involved.</p>
+
+<div class="step">
+    <strong>Step 1.</strong> Paste your own <code>firebaseConfig</code> (from the Firebase console) into the
+    config section below, replacing the placeholder values.
+</div>
+
+<div class="step">
+    <strong>Step 2.</strong> Fill out this mini survey and submit it to Firestore.
+    <div style="margin-top: 16px;">
+        <label style="display:block; margin-bottom: 10px;">
+            Do you prefer cats or dogs?
+            <select id="pet-pref" style="margin-left: 8px; padding: 4px;">
+                <option value="cats">Cats</option>
+                <option value="dogs">Dogs</option>
+            </select>
+        </label>
+        <label style="display:block; margin-bottom: 14px;">
+            Age:
+            <input type="number" id="age-input" style="margin-left: 8px; padding: 4px; width: 60px;">
+        </label>
+    </div>
+    <div>
+        <button id="write-btn">Submit to Firestore</button>
+        <button id="read-btn">Read submissions back</button>
+        <button id="export-btn">Export all to CSV</button>
+    </div>
+    <div id="status"></div>
+</div>
+
+<div style="border: 2px dashed #999; border-radius: 8px; padding: 16px;">
+    <strong>Diagnostic log (should start filling in immediately on page load):</strong>
+    <div id="log-output" style="margin-top:10px; font-size:12px; color:#555; white-space:pre-wrap; font-family:monospace;"></div>
+</div>
+
+<!-- Firebase's "compat" SDK — loads as plain <script> tags, no bundler/ES-modules needed.
+     Fine for a quick local test; a production app would typically use the modular SDK instead.
+     NOTE: switched from www.gstatic.com to cdnjs.cloudflare.com as a diagnostic test — on one
+     phone, gstatic.com silently failed to load as an embedded <script> (even though the same
+     URL loaded fine when visited directly), so we're testing a different CDN host entirely. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.19.0/firebase-app-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.19.0/firebase-firestore-compat.js"></script>
+
+<script>
+// ============================================================
+// PASTE YOUR OWN CONFIG HERE (from Firebase console > Project settings > Your apps)
+// ============================================================
+const firebaseConfig = {
+    apiKey: "AIzaSyA_UBkR3I-RuntWODtMkFmHyM5lsCdgrtU",
+    authDomain: "testvelezlab.firebaseapp.com",
+    projectId: "testvelezlab",
+    storageBucket: "testvelezlab.firebasestorage.app",
+    messagingSenderId: "811944626130",
+    appId: "1:811944626130:web:68c0f29485ad14a2136a0b"
+};
+// ============================================================
+
+// Visible step-by-step log, printed to the page itself (not just the console),
+// so we can see exactly how far execution gets without opening DevTools.
+const logEl = document.getElementById('log-output');
+function log(msg) {
+    logEl.textContent += new Date().toLocaleTimeString() + '  ' + msg + '\n';
+}
+
+log('Script started, about to call initializeApp...');
+firebase.initializeApp(firebaseConfig);
+log('initializeApp done. Calling firebase.firestore()...');
+const db = firebase.firestore();
+log('firebase.firestore() returned: ' + (db ? 'an object (ok)' : 'undefined/null (problem!)'));
+
+const statusEl = document.getElementById('status');
+const writeBtn = document.getElementById('write-btn');
+const readBtn = document.getElementById('read-btn');
+const exportBtn = document.getElementById('export-btn');
+
+function showStatus(message, kind) {
+    statusEl.textContent = message;
+    statusEl.className = kind;
+}
+
+// Races the real Firestore call against a 15-second timer, so a true
+// indefinite hang shows up as an explicit, visible timeout instead of
+// sitting on "pending" forever with no information.
+function withTimeout(promise, ms, label) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('TIMED OUT after ' + ms + 'ms waiting for: ' + label)), ms)
+        )
+    ]);
+}
+
+writeBtn.addEventListener('click', async function() {
+    const petPref = document.getElementById('pet-pref').value;
+    const age = document.getElementById('age-input').value;
+
+    log('Submit clicked. pet_preference=' + petPref + ', age=' + age);
+    showStatus('Writing to Firestore...', 'pending');
+    try {
+        log('Calling db.collection("connection_test").add({...}) now...');
+        const docRef = await withTimeout(
+            db.collection('connection_test').add({
+                pet_preference: petPref,
+                age: age,
+                timestamp: Date.now()
+            }),
+            15000,
+            'Firestore write (add)'
+        );
+        log('add() resolved successfully. docRef.id = ' + docRef.id);
+        showStatus('Success. Document written with ID: ' + docRef.id, 'ok');
+    } catch (err) {
+        log('Caught an error/timeout: ' + err.message);
+        // A failure here usually means either the config above is still
+        // placeholder values, or the Firestore Security Rules are blocking
+        // the write (e.g. test-mode rules have expired after 30 days).
+        showStatus('Write failed: ' + err.message, 'err');
+    }
+});
+
+readBtn.addEventListener('click', async function() {
+    log('Read clicked. Calling .get() now...');
+    showStatus('Reading from Firestore...', 'pending');
+    try {
+        const snapshot = await withTimeout(
+            db.collection('connection_test')
+                .orderBy('timestamp', 'desc')
+                .limit(5)
+                .get(),
+            15000,
+            'Firestore read (get)'
+        );
+        log('.get() resolved. snapshot.empty = ' + snapshot.empty);
+
+        if (snapshot.empty) {
+            showStatus('Connected fine, but no submissions found yet -- try "Submit to Firestore" first.', 'pending');
+            return;
+        }
+
+        let output = 'Success. Most recent submissions:\n\n';
+        snapshot.forEach(function(doc) {
+            const d = doc.data();
+            output += 'Prefers: ' + d.pet_preference + '  |  Age: ' + d.age
+                + '  |  Submitted: ' + new Date(d.timestamp).toLocaleString() + '\n';
+        });
+        showStatus(output, 'ok');
+    } catch (err) {
+        showStatus('Read failed: ' + err.message, 'err');
+    }
+});
+
+exportBtn.addEventListener('click', async function() {
+    log('Export clicked. Fetching all documents (no limit this time)...');
+    showStatus('Fetching all documents for export...', 'pending');
+    try {
+        // No .limit() here on purpose -- unlike the "Read" button, export
+        // should grab every document, not just the 5 most recent ones.
+        const snapshot = await withTimeout(
+            db.collection('connection_test').orderBy('timestamp', 'asc').get(),
+            15000,
+            'Firestore export (get all)'
+        );
+
+        if (snapshot.empty) {
+            showStatus('Nothing to export -- no documents in this collection yet.', 'pending');
+            return;
+        }
+
+        // Collect every field name that appears across ALL documents, not just
+        // the first one -- different trials/submissions may have different
+        // fields, so this avoids silently dropping columns.
+        const allFieldNames = new Set();
+        const rows = [];
+        snapshot.forEach(function(doc) {
+            const data = doc.data();
+            data.doc_id = doc.id; // include Firestore's own document ID as a column too
+            rows.push(data);
+            Object.keys(data).forEach(function(key) { allFieldNames.add(key); });
+        });
+        const fieldNames = Array.from(allFieldNames);
+
+        // Build the CSV text. Wrapping every value in quotes, and escaping any
+        // quote characters inside it, handles commas/newlines inside values safely.
+        function csvEscape(value) {
+            if (value === undefined || value === null) return '';
+            return '"' + String(value).replace(/"/g, '""') + '"';
+        }
+        let csv = fieldNames.map(csvEscape).join(',') + '\n';
+        rows.forEach(function(row) {
+            csv += fieldNames.map(function(name) { return csvEscape(row[name]); }).join(',') + '\n';
+        });
+
+        // Trigger a browser download using a Blob + a temporary, invisible <a> tag --
+        // this is the standard way to generate a downloadable file purely client-side,
+        // with no server involved.
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'connection_test_export_' + Date.now() + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        log('Export complete. ' + rows.length + ' rows, ' + fieldNames.length + ' columns.');
+        showStatus('Exported ' + rows.length + ' document(s) to a CSV file -- check your Downloads folder.', 'ok');
+    } catch (err) {
+        log('Export failed: ' + err.message);
+        showStatus('Export failed: ' + err.message, 'err');
+    }
+});
+</script>
+
+</body>
+</html>
